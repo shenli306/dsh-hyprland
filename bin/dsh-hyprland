@@ -21,6 +21,7 @@ WEBVIEW="$(pick \
 
 APP="$(pick \
   "${DSH_APP_DIR:-}" \
+  /usr/lib/dsh-hyprland/app \
   /usr/lib/deepseek-harness-desktop \
   "$HOME/.local/opt/dsh-tauri-nightly/usr/lib/DSH Tauri Nightly")" || { echo "找不到 DSH payload 目录，用 --app 指定" >&2; exit 1; }
 
