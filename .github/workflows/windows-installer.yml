@@ -55,7 +55,17 @@ jobs:
       # secrets). An unsigned build needs nothing from it.
       - name: Prepare Windows env file
         shell: pwsh
-        run: Copy-Item src/apps/desktop/.env.windows.example src/apps/desktop/.env.windows
+        run: |
+          # package-target.ts requires the file and a mandatory-update origin that
+          # parses as HTTPS. An unsigned build ships no updater, so a placeholder
+          # policy origin is enough; the value only has to be a valid HTTPS origin.
+          @"
+          DSH_DESKTOP_APP_ID=com.deepseek.dsh
+          DSH_DESKTOP_AUTO_UPDATE_ENV=test
+          DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN=https://policy.example.com
+          DSH_DESKTOP_MANDATORY_UPDATE_PROD_ORIGIN=https://policy.example.com
+          "@ | Set-Content -Encoding utf8 src/apps/desktop/.env.windows
+          Get-Content src/apps/desktop/.env.windows
 
       - name: Package win-x64 (unsigned)
         working-directory: src
