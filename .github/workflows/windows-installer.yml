@@ -75,19 +75,18 @@ jobs:
       - name: List artifacts
         shell: pwsh
         run: |
-          $root = "src/apps/desktop/.desktop-build/targets/win-x64/artifacts"
-          if (Test-Path $root) {
-            Get-ChildItem -Recurse $root | Select-Object FullName, Length | Format-Table -AutoSize
-          } else {
-            Get-ChildItem -Recurse -Include *.exe,*.zip,*.7z src/apps/desktop/.desktop-build |
-              Select-Object FullName, Length | Format-Table -AutoSize
-            throw "expected artifacts directory not found: $root"
-          }
+          # Unsigned builds land in targets/win-x64/unsigned-artifacts (electron-builder
+          # keeps signed and unsigned outputs apart), so resolve the directory instead
+          # of assuming its name.
+          $root = "src/apps/desktop/.desktop-build/targets/win-x64"
+          $exe = Get-ChildItem -Recurse -Filter *.exe $root | Where-Object { $_.Name -notlike '*unins*' }
+          if (-not $exe) { throw "no installer found under $root" }
+          $exe | Select-Object FullName, Length | Format-Table -AutoSize
 
       - uses: actions/upload-artifact@v4
         with:
           name: dsh-win-x64-unsigned
-          path: src/apps/desktop/.desktop-build/targets/win-x64/artifacts/**
+          path: src/apps/desktop/.desktop-build/targets/win-x64/**/*.exe
           if-no-files-found: error
 
       - name: Publish release asset
@@ -108,5 +107,5 @@ jobs:
             Electron entry point.
 
             The installer is unsigned: SmartScreen will warn on first run.
-          files: src/apps/desktop/.desktop-build/targets/win-x64/artifacts/**/*.exe
+          files: src/apps/desktop/.desktop-build/targets/win-x64/**/*-unsigned.exe
           fail_on_unmatched_files: false
