@@ -27,6 +27,11 @@ app.commandLine.appendSwitch('enable-zero-copy')
 app.commandLine.appendSwitch('force_high_performance_gpu')
 if (process.env.DSH_RENDER_NODE) app.commandLine.appendSwitch('render-node-override', process.env.DSH_RENDER_NODE)
 app.commandLine.appendSwitch('disable-breakpad')
+// 调试口：DSH_DEBUG_PORT=9222 时才开，验收脚本（CDP）靠它注入测帧 snippet。
+if (process.env.DSH_DEBUG_PORT) {
+  app.commandLine.appendSwitch('remote-debugging-port', process.env.DSH_DEBUG_PORT)
+  app.commandLine.appendSwitch('remote-allow-origins', '*')
+}
 
 let win = null
 let reloads = 0
@@ -49,6 +54,26 @@ html.dsh-unfocused *, html.dsh-unfocused *::before, html.dsh-unfocused *::after 
 }
 `
 
+const MEDIA_GUARD = `(() => {
+  if (window.__dshMediaGuard) return
+  window.__dshMediaGuard = true
+  window.__dshBlockedMedia = new Set()
+  // 失焦只 pause 一次不够：SPA 之后还会渲染新的 <video> 并 autoplay。
+  // 抓 play 事件，在失焦状态下把新起的播放按回去。
+  document.addEventListener('play', (e) => {
+    const v = e.target
+    if (!v || v.tagName !== 'VIDEO') return
+    if (window.__dshFocused === false) {
+      try { v.pause() } catch {}
+      window.__dshBlockedMedia.add(v)
+    }
+  }, true)
+  window.__dshResumeMedia = () => {
+    for (const v of window.__dshBlockedMedia) { try { v.play() } catch {} }
+    window.__dshBlockedMedia.clear()
+  }
+})()`
+
 const RAF_GOVERNOR = `(() => {
   if (window.__dshRafGovernor) return
   window.__dshRafGovernor = true
@@ -56,7 +81,7 @@ const RAF_GOVERNOR = `(() => {
   const idleMs = 1000 / ${Number.isFinite(IDLE_FPS) && IDLE_FPS > 0 ? IDLE_FPS : 15}
   let last = 0
   window.requestAnimationFrame = (cb) => nat((t) => {
-    const lenient = document.hidden || !document.hasFocus()
+    const lenient = document.hidden || window.__dshFocused === false
     if (!lenient) return cb(t)
     if (t - last < idleMs) return
     last = t
@@ -67,15 +92,34 @@ const RAF_GOVERNOR = `(() => {
 async function inject(contents) {
   try {
     await contents.insertCSS(FRAME_BUDGET_CSS, { cssOrigin: 'user' })
-    await contents.executeJavaScript(RAF_GOVERNOR, true)
+    // DSH_IDLE_FPS=0 → 完全放开 rAF（用来做对照实验，确认降帧治理的贡献）
+    if (IDLE_FPS > 0) await contents.executeJavaScript(RAF_GOVERNOR, true)
+    await contents.executeJavaScript(MEDIA_GUARD, true)
   } catch (e) {
     console.warn('[webview] inject failed:', e.message)
   }
 }
 
 function applyFocus(contents, focused) {
-  const js = `document.documentElement.classList.toggle('dsh-unfocused', ${!focused})`
-  contents.executeJavaScript(js, true).catch(() => {})
+  // 主进程看到的焦点才是准的：文档里的 document.hasFocus() 在 Electron 里
+  // 会因为窗口从未拿到键盘焦点、或 DevTools 会话接管而一直是 false，
+  // 那样 rAF 治理会永远停在“失焦”档，用户真在用的时候反而被压到 15fps。
+  const js = `(window.__focusLog = window.__focusLog || []).push([${focused}, Date.now()]);
+    window.__dshFocused = ${focused};
+    document.documentElement.classList.toggle('dsh-unfocused', ${!focused});
+    try {
+      if (!${focused}) {
+        // 会话里的视频/动图会一直解码（Media + VideoFrameCompositor 线程），
+        // 窗口不在前台时没有理由继续烧：暂停，回到前台再接着放。
+        window.__dshBlockedMedia = window.__dshBlockedMedia || new Set();
+        for (const v of document.querySelectorAll('video')) {
+          if (!v.paused) { try { v.pause() } catch {}; window.__dshBlockedMedia.add(v) }
+        }
+      } else if (window.__dshResumeMedia) {
+        window.__dshResumeMedia();
+      }
+    } catch {}`
+  contents.executeJavaScript(js, true).catch((e) => console.warn('[webview] applyFocus failed:', e && e.message))
 }
 
 // ── 窗口 ────────────────────────────────────────────────────────────────────
@@ -100,14 +144,17 @@ function createWindow(url) {
   })
 
   win.once('ready-to-show', () => win.show())
-  win.on('focus', () => applyFocus(win.webContents, true))
-  win.on('blur', () => applyFocus(win.webContents, false))
+  // 自己记焦点：Wayland 下 win.isFocused() 会在窗口真被聚焦后仍返回 false，
+  // 用它给 did-finish-load 收尾会把刚设好的“聚焦”又盖回“失焦”。
+  let focusedNow = false
+  win.on('focus', () => { focusedNow = true; console.log('[webview] focus=true'); applyFocus(win.webContents, true) })
+  win.on('blur', () => { focusedNow = false; console.log('[webview] focus=false'); applyFocus(win.webContents, false) })
   win.on('closed', () => { win = null })
 
   const { webContents } = win
   webContents.on('did-finish-load', async () => {
     inject(webContents)
-    applyFocus(webContents, win.isFocused())
+    applyFocus(webContents, focusedNow)
     try {
       const probe = await webContents.executeJavaScript(
         `({ title: document.title, href: location.href, rootKids: document.querySelector('#root')?.childElementCount ?? -1, mods: Object.keys(window.__ModuleLoader__ ? {m:1} : {}) .length })`, true)
