@@ -99,6 +99,29 @@ cd shell && cargo build --release        # 4s，产物 368KB
 - **打包版 payload 的宿主供给**：现装以 `optdepends electron` 解决（`/usr/lib/electron42` 被自动识别）。若要让发行版包自给自足，需要把 electron dist 的 `resources/default_app.asar` 与二进制一起装进 `webview-host/`——`cp -al` 硬链接场可以做到，但**没有实测过**（我用符号链接场试过打包版二进制，它仍然只认自己的 `app.asar`，秒退 RC=1，所以必须用真正的 electron dist，不能复用 payload 里的二进制）。
 - `patches/` 里的两个补丁还没在 fork 上做过完整 `makepkg` 验证（`bash -n PKGBUILD` 通过）。
 
+## 安装与发版
+
+发行版安装（只装壳，payload 复用已装的 `deepseek-harness-desktop`）：
+
+```bash
+yay -S dsh-hyprland     # 或 paru -S dsh-hyprland
+```
+
+AUR 包里的版本号不再手写：`pkgver()` 从 `shell/Cargo.toml` 取语义版本，再拼上被钉住那个 commit 的
+`rev-count` 和短 hash（实测产出 `0.1.0.r3.gc8c7b1c-1`）。以后改外壳只有一条命令：
+
+```bash
+~/devel/aur/update.sh            # 改 commit 钉点、pkgrel+1、重建验证、推送 AUR
+~/devel/aur/update.sh --dry-run  # 只看会改成什么
+```
+
+它做四件事：确认 GitHub 上的 `origin/main` 与本地一致 → 把 `#commit=` 与 `pkgver` 写成当前值 →
+`makepkg --printsrcinfo` 重生成 `.SRCINFO` → `makepkg -f --nodeps` 真构建一遍通过后
+`git push` 到 `ssh://aur@aur.archlinux.org/dsh-hyprland.git`。
+
+`.SRCINFO` 里的 `pkgver` 保持基版本（`0.1.0`），构建时由 `pkgver()` 覆盖——这是 pkgver() 类包的常规做法，
+AUR 只校验 `.SRCINFO` 与 `PKGBUILD` 的基版本一致。
+
 ## 为什么不是"重写成 Rust / Tauri(WebKit)"
 
 Chromium 的合成、重排、光栅化与外壳语言无关；V8 里的 JS 也早已 JIT。外壳换语言能省的只有 Electron 主进程早期那 0.6s。真正的启动收益来自：
