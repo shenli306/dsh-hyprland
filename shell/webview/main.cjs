@@ -9,11 +9,31 @@
 
 const { app, BrowserWindow, session } = require('electron')
 
+const fs = require('node:fs')
+const path = require('node:path')
+
+// 日志落盘：从桌面入口启动时 stdout 没人接，出问题只能靠猜。写到
+// $XDG_STATE_HOME/dsh-hyprland/webview.log，同时保留终端输出。
+const LOG_DIR = path.join(process.env.XDG_STATE_HOME || path.join(process.env.HOME || '.', '.local', 'state'), 'dsh-hyprland')
+const LOG_FILE = path.join(LOG_DIR, 'webview.log')
+function logLine(...parts) {
+  const line = new Date().toISOString() + ' ' + parts.map((v) => (typeof v === 'string' ? v : JSON.stringify(v))).join(' ')
+  try { fs.mkdirSync(LOG_DIR, { recursive: true }); fs.appendFileSync(LOG_FILE, line + '\n') } catch {}
+  try { process.stdout.write(line + '\n') } catch {}
+}
+const console = { log: logLine, warn: logLine, error: logLine, info: logLine, debug: () => {} }
+
 const URL_IN = process.env.DSH_URL || ''
 console.log('[webview] boot pid=' + process.pid + ' url=' + URL_IN)
 const IDLE_FPS = Number(process.env.DSH_IDLE_FPS || 15)
 const WATCH_RSS_MB = Number(process.env.DSH_WATCH_RSS_MB || 900)
 const WATCH_INTERVAL_MS = Number(process.env.DSH_WATCH_INTERVAL_MS || 60_000)
+// 用户最后一次按键/输入的时间（主进程视角）。看门狗重载、崩溃重载都要避开它：
+// 重载会把没提交的输入清掉，表现就是“打着字突然断了”。
+let lastInputAt = 0
+const WATCH_IDLE_MS = Number(process.env.DSH_WATCH_IDLE_MS || 30_000)
+// rAF 治理的输入宽限：刚有输入（含输入法组合中）的这段时间不压帧。
+const INPUT_GRACE_MS = Number(process.env.DSH_INPUT_GRACE_MS || 2_000)
 
 // ── P4：Hyprland / Wayland / NVIDIA ─────────────────────────────────────────
 app.commandLine.appendSwitch('ozone-platform-hint', 'auto')
@@ -27,6 +47,11 @@ app.commandLine.appendSwitch('enable-zero-copy')
 app.commandLine.appendSwitch('force_high_performance_gpu')
 if (process.env.DSH_RENDER_NODE) app.commandLine.appendSwitch('render-node-override', process.env.DSH_RENDER_NODE)
 app.commandLine.appendSwitch('disable-breakpad')
+// Wayland 文本输入：不开这个，Electron 不接 text-input-v3，fcitx5 的中文输入会
+// 断字、候选窗不跟光标、上屏丢字符。GTK_IM_MODULE 在 Hyprland 会话里常常没导出，
+// 所以这条不能指望环境变量。
+app.commandLine.appendSwitch('enable-wayland-ime')
+app.commandLine.appendSwitch('wayland-text-input-version', '3')
 // 调试口：DSH_DEBUG_PORT=9222 时才开，验收脚本（CDP）靠它注入测帧 snippet。
 if (process.env.DSH_DEBUG_PORT) {
   app.commandLine.appendSwitch('remote-debugging-port', process.env.DSH_DEBUG_PORT)
@@ -80,9 +105,16 @@ const RAF_GOVERNOR = `(() => {
   const nat = window.requestAnimationFrame.bind(window)
   const idleMs = 1000 / ${Number.isFinite(IDLE_FPS) && IDLE_FPS > 0 ? IDLE_FPS : 15}
   let last = 0
+  let lastInput = -1e9
+  const mark = () => { lastInput = performance.now() }
+  for (const ev of ['keydown', 'keyup', 'input', 'compositionstart', 'compositionupdate',
+                    'compositionend', 'pointerdown', 'pointermove', 'wheel'])
+    addEventListener(ev, mark, { capture: true, passive: true })
   window.requestAnimationFrame = (cb) => nat((t) => {
-    const lenient = document.hidden || window.__dshFocused === false
-    if (!lenient) return cb(t)
+    const unfocused = document.hidden || window.__dshFocused === false
+    if (!unfocused) return cb(t)
+    // 刚有输入就不要压帧：压到 15fps 时输入法组合、光标跟随会看起来“卡住/断字”。
+    if (t - lastInput < ${INPUT_GRACE_MS}) return cb(t)
     if (t - last < idleMs) return
     last = t
     cb(t)
@@ -163,12 +195,21 @@ function createWindow(url) {
       console.warn('[webview] probe failed:', e.message)
     }
   })
+  // 主进程侧记录输入活动：键盘事件在这里一定能看到（页面里的监听可能被框架吞掉）。
+  webContents.on('before-input-event', () => { lastInputAt = Date.now() })
   webContents.on('did-fail-load', (_e, code, desc, url) => {
     console.error(`[webview] did-fail-load ${code} ${desc} ${url}`)
   })
   webContents.on('render-process-gone', (_e, details) => {
     console.error('[webview] renderer gone:', details.reason)
-    if (reloads++ < 3) win?.reload()
+    if (reloads >= 3) { console.error('[webview] reload budget exhausted'); return }
+    // 崩溃必须重载，但如果刚刚还在打字，等静默期结束再重载，别把输入吞掉。
+    const wait = Math.max(0, WATCH_IDLE_MS - (Date.now() - lastInputAt))
+    reloads++
+    setTimeout(() => {
+      console.error('[webview] reloading after renderer gone, reason=' + details.reason)
+      if (win && !win.isDestroyed()) win.webContents.reload()
+    }, Math.min(wait, 10_000))
   })
   webContents.setWindowOpenHandler(({ url: target }) => {
     if (!isLocal(target)) return { action: 'deny' }
@@ -186,11 +227,14 @@ function startWatchdog() {
       const tabs = app.getAppMetrics().filter((m) => m.type === 'Tab')
       for (const tab of tabs) {
         const mb = Math.round((tab.memory?.workingSetSize || 0) / 1024)
-        if (mb > WATCH_RSS_MB && reloads < 5) {
-          console.warn(`[webview] renderer ${mb}MB > ${WATCH_RSS_MB}MB → reload`)
+        const idleFor = Date.now() - lastInputAt
+        if (mb > WATCH_RSS_MB && reloads < 5 && idleFor > WATCH_IDLE_MS) {
+          console.warn(`[webview] renderer ${mb}MB > ${WATCH_RSS_MB}MB, idle ${Math.round(idleFor / 1000)}s → reload`)
           reloads++
           win.webContents.reload()
           break
+        } else if (mb > WATCH_RSS_MB) {
+          console.warn(`[webview] renderer ${mb}MB over budget but input ${Math.round(idleFor / 1000)}s ago, deferring reload`)
         }
       }
     } catch (e) {

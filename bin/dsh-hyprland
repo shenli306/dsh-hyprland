@@ -15,6 +15,7 @@ BIN="$(pick \
 
 WEBVIEW="$(pick \
   "${DSH_WEBVIEW_DIR:-}" \
+  "${XDG_DATA_HOME:-$HOME/.local/share}/dsh-hyprland/webview" \
   "$ROOT/../share/dsh-hyprland/webview" \
   "$ROOT/shell/webview" \
   /usr/share/dsh-hyprland/webview)" || { echo "找不到 webview 目录" >&2; exit 1; }
