@@ -50,6 +50,13 @@ jobs:
         working-directory: src
         run: pnpm install --frozen-lockfile
 
+      # package-target.ts refuses to start without apps/desktop/.env.windows; the
+      # upstream repository ships only the example (the real one carries release
+      # secrets). An unsigned build needs nothing from it.
+      - name: Prepare Windows env file
+        shell: pwsh
+        run: Copy-Item src/apps/desktop/.env.windows.example src/apps/desktop/.env.windows
+
       - name: Package win-x64 (unsigned)
         working-directory: src
         run: pnpm --filter @deepseek-ai/dsh-desktop run package:win:x64 --unsigned
