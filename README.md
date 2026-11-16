@@ -101,11 +101,25 @@ cd shell && cargo build --release        # 4s，产物 368KB
 
 ## 安装与发版
 
-发行版安装（只装壳，payload 复用已装的 `deepseek-harness-desktop`）：
+发行版安装：
 
 ```bash
 yay -S dsh-hyprland     # 或 paru -S dsh-hyprland
 ```
+
+这个包**自带 payload**：从上游 tag 现场构建（`pnpm --filter @deepseek-ai/dsh-desktop run package:dir` +
+两个 Linux 补丁），装到 `/usr/lib/dsh-hyprland/app`，外壳装到 `/usr/lib/dsh-hyprland/dsh-shell-hyprland`。
+因此它 `provides` / `conflicts` / `replaces` **`deepseek-harness-desktop`**：装它会顶替原包，不会再并存一份。
+代价是首次构建 15–25 分钟、约 6 GB 临时空间（上游打包阶段会下载 Electron / Node / CPython / wheels 并跑
+一组 packed-runtime 冒烟检查）。
+
+在需要代理的网络上构建时加两个环境变量，否则 Node 自己的 `fetch` 与 `@electron/get` 都不会走代理：
+
+```bash
+HTTPS_PROXY=http://127.0.0.1:7897 ELECTRON_GET_USE_PROXY=true NODE_USE_ENV_PROXY=1 makepkg -si
+```
+
+实测：`dsh-hyprland 0.2.2.rc.2.gdd46f39-1`，包 357 MB，安装后 1.1 GB。
 
 AUR 包里的版本号不再手写：`pkgver()` 从 `shell/Cargo.toml` 取语义版本，再拼上被钉住那个 commit 的
 `rev-count` 和短 hash（实测产出 `0.1.0.r3.gc8c7b1c-1`）。以后改外壳只有一条命令：
