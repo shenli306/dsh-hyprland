@@ -115,12 +115,13 @@ AUR 包里的版本号不再手写：`pkgver()` 从 `shell/Cargo.toml` 取语义
 ~/devel/aur/update.sh --dry-run  # 只看会改成什么
 ```
 
-它做四件事：确认 GitHub 上的 `origin/main` 与本地一致 → 把 `#commit=` 与 `pkgver` 写成当前值 →
-`makepkg --printsrcinfo` 重生成 `.SRCINFO` → `makepkg -f --nodeps` 真构建一遍通过后
+它做四件事：确认 GitHub 上的 `origin/main` 与本地一致 → 把 `#commit=` 与基版本 `pkgver` 写成当前值 →
+`makepkg -f --nodeps` 真构建一遍 → 用构建后的 `PKGBUILD` 重生成 `.SRCINFO` 再
 `git push` 到 `ssh://aur@aur.archlinux.org/dsh-hyprland.git`。
 
-`.SRCINFO` 里的 `pkgver` 保持基版本（`0.1.0`），构建时由 `pkgver()` 覆盖——这是 pkgver() 类包的常规做法，
-AUR 只校验 `.SRCINFO` 与 `PKGBUILD` 的基版本一致。
+顺序有讲究：`makepkg` 会把 `pkgver()` 的结果**写回** `PKGBUILD`（并顺带把 `pkgrel` 重置成 1，这是它在版本变化时的既有行为），所以
+`.SRCINFO` 必须在构建**之后**生成，两个文件才一致——先生成后构建的话，`.SRCINFO` 里会留着 `0.1.0` 而 `PKGBUILD` 变成
+`0.1.0.r4.g0dab232`。版本号不需要手改 `pkgrel`，`r<N>` 已经随提交数自动递增。
 
 ## 为什么不是"重写成 Rust / Tauri(WebKit)"
 
