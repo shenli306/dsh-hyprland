@@ -113,11 +113,16 @@ yay -S dsh-hyprland     # 或 paru -S dsh-hyprland
 代价是首次构建 15–25 分钟、约 6 GB 临时空间（上游打包阶段会下载 Electron / Node / CPython / wheels 并跑
 一组 packed-runtime 冒烟检查）。
 
-在需要代理的网络上构建时加两个环境变量，否则 Node 自己的 `fetch` 与 `@electron/get` 都不会走代理：
+在需要代理的网络上构建时加三个环境变量，否则 Node 自己的 `fetch` 与 `@electron/get` 都不会走代理：
 
 ```bash
 HTTPS_PROXY=http://127.0.0.1:7897 ELECTRON_GET_USE_PROXY=true NODE_USE_ENV_PROXY=1 makepkg -si
 ```
+
+`NODE_USE_ENV_PROXY=1` 会让 undici 把**回环地址**也送进代理，而打包阶段的 packed-runtime 冒烟是
+`fetch("http://127.0.0.1:<port>/?token=…")`——代理回 400，冒烟就报 `packaged frontend smoke failed`，
+看起来像 payload 坏了。`build()` 里已经补了 `NO_PROXY=127.0.0.1,localhost,::1`（并保留调用方已有的值），
+所以不用手加；自己跑 `pnpm run package:dir` 调试时记得也带上。
 
 实测：`dsh-hyprland 0.2.2.rc.2.gdd46f39-1`，包 357 MB，安装后 1.1 GB。
 
@@ -136,6 +141,31 @@ AUR 包里的版本号不再手写：`pkgver()` 从 `shell/Cargo.toml` 取语义
 顺序有讲究：`makepkg` 会把 `pkgver()` 的结果**写回** `PKGBUILD`（并顺带把 `pkgrel` 重置成 1，这是它在版本变化时的既有行为），所以
 `.SRCINFO` 必须在构建**之后**生成，两个文件才一致——先生成后构建的话，`.SRCINFO` 里会留着 `0.1.0` 而 `PKGBUILD` 变成
 `0.1.0.r4.g0dab232`。版本号不需要手改 `pkgrel`，`r<N>` 已经随提交数自动递增。
+
+## Windows 版
+
+Windows 安装包不能在 Linux 上交叉打：`apps/desktop/scripts/package-target.ts` 直接拒绝
+
+```ts
+if (target.platform === 'win32' && (hostPlatform !== 'win32' || hostArch !== 'x64')) {
+  throw new Error('desktop package: win-x64 requires a Windows x64 build host')
+}
+```
+
+所以 `.github/workflows/windows-installer.yml` 在 `windows-latest` 上跑上游的打包路径，产物传到
+Actions artifact，带 tag 触发时再用 `softprops/action-gh-release` 挂到 Release。触发方式：
+
+```bash
+gh workflow run windows-installer.yml -f tag=v0.2.2-rc.2-win.1
+# 或
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  https://api.github.com/repos/shenli306/dsh-hyprland/actions/workflows/windows-installer.yml/dispatches \
+  -d '{"ref":"main","inputs":{"tag":"v0.2.2-rc.2-win.1"}}'
+```
+
+注意这个仓库是**补丁覆盖层**，没有 `pnpm-lock.yaml`，所以工作流不 checkout 自己，而是 checkout
+`deepseek-ai/deepseek-harness` 的 `dsh-v0.2.2-rc.2` tag 再打包。Windows 产物里没有本仓库的外壳
+（外壳是 Linux/Wayland 专用），用的是上游 Electron 入口；安装包未签名，SmartScreen 会拦一次。
 
 ## 为什么不是"重写成 Rust / Tauri(WebKit)"
 
