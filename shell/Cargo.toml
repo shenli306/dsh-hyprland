@@ -1,0 +1,17 @@
+[package]
+name = "dsh-shell-hyprland"
+version = "0.1.0"
+edition = "2021"
+description = "Tauri 式 Rust 外壳：拉起 dsh host，再把 Electron 运行时当 WebView 宿主，窗口参数为 Hyprland/NVIDIA 调优"
+license = "MIT"
+
+[[bin]]
+name = "dsh-shell-hyprland"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = "z"     # 外壳本身不热，体积优先；真正的热路径在 V8 里
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

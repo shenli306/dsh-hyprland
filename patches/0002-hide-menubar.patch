@@ -1,0 +1,36 @@
+--- a/apps/desktop/src/main.ts
++++ b/apps/desktop/src/main.ts
+@@ -304,12 +304,17 @@
+     },
+   })
+   window.webContents.setWindowOpenHandler(({ url }) => {
+     if (['http:', 'https:'].includes(new URL(url).protocol)) void shell.openExternal(url)
+     return { action: 'deny' }
+   })
++  // Linux draws the application menu inside the window frame, so the shell's top-level
++  // 「应用」and Edit labels sit in the title area. Every command they expose is reachable from
++  // the tray and the in-window controls; the menu stays installed so its accelerators
++  // (clipboard, F12) keep dispatching, but the bar itself never paints.
++  if (process.platform === 'linux') window.setMenuBarVisibility(false)
+   if (process.platform === 'darwin' || process.platform === 'win32') {
+     // Fullscreen hides native window controls; overlays drop their caption clearance.
+     const sendFullscreen = (): void => {
+       if (!window.isDestroyed()) window.webContents.send(DESKTOP_IPC.windowFullscreen, window.isFullScreen())
+     }
+     window.on('enter-full-screen', sendFullscreen)
+--- a/apps/desktop/src/welcome-window.ts
++++ b/apps/desktop/src/welcome-window.ts
+@@ -56,12 +56,13 @@
+  * @param operations - credential write and this-launch-only skip actions.
+  * @returns the visible window; a failed load destroys it before rejecting.
+  */
+ export async function openWelcomeWindow(locale: DesktopLocale, operations: WelcomeOperations): Promise<BrowserWindow> {
+   const options = welcomeWindowOptions(process.platform, locale)
+   const window = new BrowserWindow(options)
++  if (process.platform === 'linux') window.setMenuBarVisibility(false)
+   disposeActiveHandlers?.()
+   let active = true
+   const disposeHandlers = (): void => {
+     if (!active) return
+     active = false
+     for (const channel of [

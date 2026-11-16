@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# dsh-hyprland 启动器：找到外壳二进制、webview 目录、payload 目录，然后交给 Rust 外壳。
+set -euo pipefail
+
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+ROOT="$(dirname "$(dirname "$SELF")")"
+
+pick() { for c in "$@"; do [[ -e "$c" ]] && { printf '%s\n' "$c"; return 0; }; done; return 1; }
+
+BIN="$(pick \
+  "${DSH_SHELL_BIN:-}" \
+  "$ROOT/shell/target/release/dsh-shell-hyprland" \
+  "$ROOT/../lib/dsh-hyprland/dsh-shell-hyprland" \
+  /usr/lib/dsh-hyprland/dsh-shell-hyprland)" || { echo "找不到 dsh-shell-hyprland，先 cargo build --release" >&2; exit 1; }
+
+WEBVIEW="$(pick \
+  "${DSH_WEBVIEW_DIR:-}" \
+  "$ROOT/../share/dsh-hyprland/webview" \
+  "$ROOT/shell/webview" \
+  /usr/share/dsh-hyprland/webview)" || { echo "找不到 webview 目录" >&2; exit 1; }
+
+APP="$(pick \
+  "${DSH_APP_DIR:-}" \
+  /usr/lib/deepseek-harness-desktop \
+  "$HOME/.local/opt/dsh-tauri-nightly/usr/lib/DSH Tauri Nightly")" || { echo "找不到 DSH payload 目录，用 --app 指定" >&2; exit 1; }
+
+# WebView 宿主：必须是未打包的 Electron（resources/ 下只有 default_app.asar）
+if [[ -z "${DSH_WEBVIEW_ELECTRON:-}" ]]; then
+  BARE="$(pick \
+    "$APP/runtime/linux-x64/DSH Tauri Nightly" \
+    "$APP/runtime/linux-x64/DSH Tauri" \
+    "$APP/webview-host/electron" 2>/dev/null || true)"
+  [[ -n "$BARE" ]] && export DSH_WEBVIEW_ELECTRON="$BARE"
+fi
+
+# NVIDIA + Hyprland：让 Chromium 显式挑 NVIDIA 的 render node
+if [[ -z "${DSH_RENDER_NODE:-}" && -e /dev/dri/renderD128 ]]; then
+  export DSH_RENDER_NODE=/dev/dri/renderD128
+fi
+
+exec "$BIN" --app "$APP" "$@"

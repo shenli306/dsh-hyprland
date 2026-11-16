@@ -1,0 +1,7 @@
+{
+  "name": "dsh-hyprland-webview",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Electron 只做 WebView 宿主：窗口参数按 Hyprland + NVIDIA 调优，负责帧预算与长跑看门狗",
+  "main": "main.cjs"
+}
