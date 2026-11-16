@@ -84,7 +84,10 @@ struct Layout {
     profile_dir: PathBuf,
     /// primary runtime 目录（捆绑的 node/pnpm/python 载荷所在），可空
     primary: Option<PathBuf>,
+    /// 捆绑的 pnpm 入口（作为 host argv[5]，决定它要不要自己去找 pnpm）
     pnpm: Option<PathBuf>,
+    /// host argv[6]：塞进子进程 PATH 的目录，里面得有 `node`（上游 = <resources>/runtime/bin）
+    node_bin: Option<PathBuf>,
     /// 未打包的 Electron，只用来当 WebView 宿主
     webview_electron: Option<PathBuf>,
 }
@@ -230,12 +233,29 @@ fn discover(args: &Args) -> Result<Layout, String> {
     let primary = [app.join("resources/runtime/primary-runtime"), app.join("dependencies/primary-runtime")]
         .into_iter()
         .find(|p| p.is_dir());
-    let pnpm = [app.join("resources/runtime/pnpm/bin/pnpm.cjs"), app.join("dependencies/pnpm/bin/pnpm.cjs")]
-        .into_iter()
-        .find(|p| p.exists());
+    // pnpm 入口的两种历史布局：上游 desktop 用的是 primary-runtime/dependencies 下那份
+    // （`main.js` 里 `pnpm: join(resourcesPath, "runtime", "primary-runtime", "dependencies",
+    // "pnpm", "bin", "pnpm.mjs")`），更早的布局把它放在 resources/runtime/pnpm 下。
+    // 认错路径的后果不是报错而是**静默降级**：argv[5] 缺席，host 不建 packageManager，
+    // 运行期装/更新插件就没有受管的 pnpm 可用。
+    let pnpm = [
+        app.join("resources/runtime/primary-runtime/dependencies/pnpm/bin/pnpm.mjs"),
+        app.join("resources/runtime/primary-runtime/dependencies/pnpm/bin/pnpm.cjs"),
+        app.join("resources/runtime/pnpm/bin/pnpm.cjs"),
+        app.join("dependencies/pnpm/bin/pnpm.cjs"),
+    ]
+    .into_iter()
+    .find(|p| p.exists());
+    // argv[6] 是 host 加到子进程 PATH 前面的目录，必须是**有 node 可执行文件**的那层。
+    let node_bin = [
+        app.join("resources/runtime/bin"),
+        app.join("dependencies/runtime/bin"),
+    ]
+    .into_iter()
+    .find(|p| p.join("node").is_file());
 
     let webview_electron = find_bare_electron(&app);
-    Ok(Layout { electron, runtime, host_entry, profile_dir, primary, pnpm, webview_electron })
+    Ok(Layout { electron, runtime, host_entry, profile_dir, primary, pnpm, node_bin, webview_electron })
 }
 
 // ─── 单实例 ──────────────────────────────────────────────────────────────────
@@ -290,7 +310,14 @@ fn spawn_host(layout: &Layout, _args: &Args) -> Result<(Child, File), String> {
     }
     if let Some(pnpm) = &layout.pnpm {
         cmd.arg(pnpm);
-        cmd.arg(layout.electron.parent().unwrap_or(Path::new("/")));
+        // argv[5] 与 argv[6] 成对出现：host 把它们拼成 packageManager（pnpm 入口 + PATH 前缀）
+        cmd.arg(
+            layout
+                .node_bin
+                .clone()
+                .or_else(|| layout.electron.parent().map(Path::to_path_buf))
+                .unwrap_or_else(|| PathBuf::from("/")),
+        );
     }
 
     cmd.env("ELECTRON_RUN_AS_NODE", "1")
