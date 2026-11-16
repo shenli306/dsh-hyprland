@@ -64,6 +64,7 @@ jobs:
           DSH_DESKTOP_AUTO_UPDATE_ENV=test
           DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN=https://policy.example.com
           DSH_DESKTOP_MANDATORY_UPDATE_PROD_ORIGIN=https://policy.example.com
+          DSH_DESKTOP_MANDATORY_UPDATE_CONFIG={"allowedAuthOrigins":["https://login.example.com"]}
           "@ | Set-Content -Encoding utf8 src/apps/desktop/.env.windows
           Get-Content src/apps/desktop/.env.windows
 
