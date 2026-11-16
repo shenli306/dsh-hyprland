@@ -1,8 +1,10 @@
 name: windows-installer
 
-# win-x64 cannot be cross-built: apps/desktop/scripts/package-target.ts:201 refuses
-# to package win32 from a non-Windows host. So the Windows installer is produced on
-# a Windows runner here, from the same tree, and published as a release asset.
+# This repository is a patch overlay, not a copy of the monorepo: it carries the
+# Linux launcher shell, the packaging patches and the PKGBUILD, and has no
+# pnpm-lock.yaml of its own. The Windows artifact is therefore built from the
+# upstream tree at the pinned tag, which is also the only supported way to do it
+# (apps/desktop/scripts/package-target.ts refuses win32 packaging off-Windows).
 on:
   workflow_dispatch:
     inputs:
@@ -16,12 +18,22 @@ on:
 permissions:
   contents: write
 
+env:
+  UPSTREAM_REPOSITORY: deepseek-ai/deepseek-harness
+  UPSTREAM_TAG: dsh-v0.2.2-rc.2
+
 jobs:
   build:
     runs-on: windows-latest
     timeout-minutes: 150
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout upstream at the pinned tag
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPOSITORY }}
+          ref: ${{ env.UPSTREAM_TAG }}
+          path: src
+          fetch-depth: 1
 
       - uses: pnpm/action-setup@v4
         with:
@@ -32,21 +44,24 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+          cache-dependency-path: src/pnpm-lock.yaml
 
       - name: Install workspace
+        working-directory: src
         run: pnpm install --frozen-lockfile
 
       - name: Package win-x64 (unsigned)
+        working-directory: src
         run: pnpm --filter @deepseek-ai/dsh-desktop run package:win:x64 --unsigned
 
       - name: List artifacts
         shell: pwsh
         run: |
-          $root = "apps/desktop/.desktop-build/targets/win-x64/artifacts"
+          $root = "src/apps/desktop/.desktop-build/targets/win-x64/artifacts"
           if (Test-Path $root) {
             Get-ChildItem -Recurse $root | Select-Object FullName, Length | Format-Table -AutoSize
           } else {
-            Get-ChildItem -Recurse -Include *.exe,*.zip,*.7z apps/desktop/.desktop-build |
+            Get-ChildItem -Recurse -Include *.exe,*.zip,*.7z src/apps/desktop/.desktop-build |
               Select-Object FullName, Length | Format-Table -AutoSize
             throw "expected artifacts directory not found: $root"
           }
@@ -54,7 +69,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: dsh-win-x64-unsigned
-          path: apps/desktop/.desktop-build/targets/win-x64/artifacts/**
+          path: src/apps/desktop/.desktop-build/targets/win-x64/artifacts/**
           if-no-files-found: error
 
       - name: Publish release asset
@@ -62,15 +77,18 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
-          name: DSH ${{ inputs.tag || github.ref_name }}
+          name: DeepSeek Harness ${{ env.UPSTREAM_TAG }} (Windows x64)
           body: |
-            Windows x64 build of DeepSeek Harness (unsigned).
+            Windows x64 build of DeepSeek Harness ${{ env.UPSTREAM_TAG }}, unsigned.
 
-            Built from ${{ github.sha }} on a Windows runner. The Linux/Wayland
-            Hyprland shell is not part of this artifact: it is a Linux-only
-            launcher and the Windows build uses the upstream Electron desktop
-            entry point.
+            Built from ${{ env.UPSTREAM_REPOSITORY }}@${{ env.UPSTREAM_TAG }} on a
+            Windows runner, because the upstream packaging scripts refuse to
+            cross-build win32.
 
-            The installer is unsigned, so SmartScreen will warn on first run.
-          files: apps/desktop/.desktop-build/targets/win-x64/artifacts/**/*.exe
+            The Hyprland launcher shell in this repository is Linux/Wayland only
+            and is not part of this artifact; on Windows the app uses the upstream
+            Electron entry point.
+
+            The installer is unsigned: SmartScreen will warn on first run.
+          files: src/apps/desktop/.desktop-build/targets/win-x64/artifacts/**/*.exe
           fail_on_unmatched_files: false
