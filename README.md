@@ -142,31 +142,6 @@ AUR 包里的版本号不再手写：`pkgver()` 从 `shell/Cargo.toml` 取语义
 `.SRCINFO` 必须在构建**之后**生成，两个文件才一致——先生成后构建的话，`.SRCINFO` 里会留着 `0.1.0` 而 `PKGBUILD` 变成
 `0.1.0.r4.g0dab232`。版本号不需要手改 `pkgrel`，`r<N>` 已经随提交数自动递增。
 
-## Windows 版
-
-Windows 安装包不能在 Linux 上交叉打：`apps/desktop/scripts/package-target.ts` 直接拒绝
-
-```ts
-if (target.platform === 'win32' && (hostPlatform !== 'win32' || hostArch !== 'x64')) {
-  throw new Error('desktop package: win-x64 requires a Windows x64 build host')
-}
-```
-
-所以 `.github/workflows/windows-installer.yml` 在 `windows-latest` 上跑上游的打包路径，产物传到
-Actions artifact，带 tag 触发时再用 `softprops/action-gh-release` 挂到 Release。触发方式：
-
-```bash
-gh workflow run windows-installer.yml -f tag=v0.2.2-rc.2-win.1
-# 或
-curl -X POST -H "Authorization: Bearer $TOKEN" \
-  https://api.github.com/repos/shenli306/dsh-hyprland/actions/workflows/windows-installer.yml/dispatches \
-  -d '{"ref":"main","inputs":{"tag":"v0.2.2-rc.2-win.1"}}'
-```
-
-注意这个仓库是**补丁覆盖层**，没有 `pnpm-lock.yaml`，所以工作流不 checkout 自己，而是 checkout
-`deepseek-ai/deepseek-harness` 的 `dsh-v0.2.2-rc.2` tag 再打包。Windows 产物里没有本仓库的外壳
-（外壳是 Linux/Wayland 专用），用的是上游 Electron 入口；安装包未签名，SmartScreen 会拦一次。
-
 ## 为什么不是"重写成 Rust / Tauri(WebKit)"
 
 Chromium 的合成、重排、光栅化与外壳语言无关；V8 里的 JS 也早已 JIT。外壳换语言能省的只有 Electron 主进程早期那 0.6s。真正的启动收益来自：
